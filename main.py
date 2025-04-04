@@ -9,13 +9,10 @@ load_dotenv()
 
 app = FastAPI()
 
-# Get frontend URL from environment variable
-frontend_url = os.getenv('FRONTEND_URL')
-
-# Configure CORS
+# Configure CORS for Kubernetes deployment
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_url],
+    allow_origins=["*"],  # Allow all origins in development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
