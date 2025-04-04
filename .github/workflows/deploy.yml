@@ -1,0 +1,120 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  SERVER_BASE_URL: ${{ secrets.SERVER_BASE_URL }}
+  DOMAIN_NAME: f1b
+  NAMESPACE: utils
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Check and create ECR repository if needed
+        id: create-repository
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_NAMESPACE: ${{ vars.AWS_ECR_NAMESPACE }}
+          ECR_REPOSITORY: ${{ github.event.repository.name }}
+        run: |
+          if ! aws ecr describe-repositories --repository-names "$ECR_NAMESPACE/$ECR_REPOSITORY" --region $AWS_REGION 2>/dev/null; then
+            echo "Repository does not exist. Creating it now..."
+            aws ecr create-repository --repository-name "$ECR_NAMESPACE/$ECR_REPOSITORY" --region $AWS_REGION
+            echo "Repository created successfully."
+          else
+            echo "Repository already exists."
+          fi
+            
+      - name: Build and push Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_NAMESPACE: ${{ vars.AWS_ECR_NAMESPACE }}
+          ECR_REPOSITORY: ${{ github.event.repository.name }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_NAMESPACE/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_NAMESPACE/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_NAMESPACE/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Read deployment config
+        id: config
+        run: |
+          if [ -f "deploy-config.json" ]; then
+            CONFIG=$(cat deploy-config.json | jq -c '.')
+            echo "config<<EOF" >> $GITHUB_OUTPUT
+            echo "$CONFIG" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "Config loaded successfully."
+          else
+            echo "Error: deploy-config.json not found."
+            exit 1
+          fi
+
+      - name: Check if deployment exists via API
+        id: check-deployment
+        run: |
+          RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.SERVER_API_TOKEN }}" \
+            -d '{"name":"${{ env.DOMAIN_NAME }}","namespace":"${{ env.NAMESPACE }}"}' \
+            "${{ env.SERVER_BASE_URL }}/api/deployment/exists")
+          
+          echo "Full API Response: $RESPONSE"
+          
+          if echo "$RESPONSE" | jq . &>/dev/null; then
+            EXISTS=$(echo "$RESPONSE" | jq -r 'if has("exists") then .exists else "false" end')
+            
+            if [ "$EXISTS" = "null" ]; then
+              EXISTS="false"
+            fi
+          else
+            echo "Warning: Received invalid response from API"
+            EXISTS="false"
+          fi
+          
+          echo "Deployment exists value: $EXISTS"
+          echo "exists=$EXISTS" >> $GITHUB_OUTPUT
+      
+      - name: Apply config via API if deployment does not exist
+        if: steps.check-deployment.outputs.exists == 'false'
+        env:
+          CONFIG: ${{ steps.config.outputs.config }}
+          IMAGE: ${{ steps.build-image.outputs.image }}
+        run: |
+          UPDATED_CONFIG=$(echo $CONFIG | jq --arg img "$IMAGE" '.image = $img')
+          
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.SERVER_API_TOKEN }}" \
+            -d "{\"config\": $UPDATED_CONFIG}" \
+            ${{ env.SERVER_BASE_URL }}/api/deployment/apply-config
+
+      - name: Call API to patch deployment
+        if: steps.check-deployment.outputs.exists == 'true'
+        env:
+          IMAGE: ${{ steps.build-image.outputs.image }}
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.SERVER_API_TOKEN }}" \
+            -d "{\"deployment\": \"${{ env.DOMAIN_NAME }}\", \"namespace\": \"${{ env.NAMESPACE }}\", \"image\": \"$IMAGE\"}" \
+            ${{ env.SERVER_BASE_URL }}/api/deployment/patch
