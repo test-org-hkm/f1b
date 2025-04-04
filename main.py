@@ -23,7 +23,7 @@ class BirthdayRequest(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to Birthday Calculator API"}
+    return {"message": "welcome to Birthday Calculator API"}
 
 @app.get("/health")
 def read_root():
