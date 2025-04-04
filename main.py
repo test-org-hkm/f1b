@@ -25,6 +25,10 @@ class BirthdayRequest(BaseModel):
 def read_root():
     return {"message": "Welcome to Birthday Calculator API"}
 
+@app.get("/health")
+def read_root():
+    return {"message": "Welcome to Birthday Calculator API"}
+
 @app.post("/calculate-age")
 def calculate_age(request: BirthdayRequest):
     try:
@@ -33,4 +37,4 @@ def calculate_age(request: BirthdayRequest):
         age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
         return {"age": age}
     except ValueError:
-        return {"error": "Invalid date format. Please use YYYY-MM-DD"} 
+        return {"error": "Invalid date format, Please use YYYY-MM-DD"} 
